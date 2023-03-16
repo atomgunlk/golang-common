@@ -1,11 +1,14 @@
 package logger
 
 import (
+	"fmt"
+	"io"
 	"os"
-
-	"github.com/sirupsen/logrus"
+	"runtime"
+	"time"
 
 	"github.com/atomgunlk/golang-common/pkg/logger/hooks"
+	"github.com/sirupsen/logrus"
 )
 
 // TimeStampFormat config time format
@@ -19,13 +22,36 @@ type Entry struct {
 	*logrus.Entry
 }
 
-var logger = logrus.New()
+var (
+	logger                          = logrus.New()
+	mw                    io.Writer = nil
+	logStdOut             io.Writer = nil
+	logToStdout           bool      = true
+	logPath               string    = "log"
+	logFileNamePrefix     string    = "log"
+	logFileNameDateSuffix bool      = true
+	logFile               *os.File  = nil
+	lastLogTime           time.Time
+	lastLogFileOpenTime   time.Time
+	logfileCloseTimeout   int    = 10 // in second
+	appenv                string = os.Getenv("APP_ENV")
+)
 
 func init() {
-	if os.Getenv("APP_ENV") != "production" || os.Getenv("APP_ENV") == "" {
+	switch runtime.GOOS {
+	case "darwin":
+		logStdOut = os.Stdout
+	case "windows":
+		logStdOut = os.Stdout
+		// logStdOut = ansicolor.NewAnsiColorWriter(os.Stdout)
+	default:
+		logStdOut = os.Stdout
+	}
+
+	if appenv != "production" || appenv == "" {
 		logger.SetFormatter(&logrus.TextFormatter{
 			ForceColors:               true,
-			EnvironmentOverrideColors: true,
+			EnvironmentOverrideColors: false,
 			DisableColors:             false,
 			TimestampFormat:           TimeStampFormat,
 			FullTimestamp:             true,
@@ -36,23 +62,73 @@ func init() {
 
 		level := getEnv("LOG_LEVEL", "debug")
 		SetLevel(level)
+		// hooks.UseTimestamp(logger)
 	} else {
 		logger.SetFormatter(&logrus.JSONFormatter{
 			DisableTimestamp: true,
 			FieldMap: logrus.FieldMap{
 				logrus.FieldKeyLevel: "log_level",
 			},
-			PrettyPrint: true,
+			PrettyPrint: false,
 		})
 
 		level := getEnv("LOG_LEVEL", "info")
 		SetLevel(level)
-		logger.SetOutput(os.Stdout)
+		// logger.SetOutput(os.Stdout)
 		hooks.UseTimestamp(logger)
 	}
 }
 func GetLogger() *logrus.Logger {
 	return logger
+}
+
+// SetOutputToFile
+// out to file
+func SetOutputToFile(path, filenamePrefix string, useDateSuffix bool) {
+	logToStdout = false
+
+	logPath = path
+	logFileNamePrefix = filenamePrefix
+	logFileNameDateSuffix = useDateSuffix
+
+	// upload path
+	err := os.MkdirAll(logPath, 0755)
+	if err != nil {
+		fmt.Printf("Logger Create log Path %s\r\n", err.Error())
+	}
+	// go routine close file timer
+	if !isLogfileOpen() {
+		logFileOpen()
+		// go logFileCloseTimer()
+	}
+}
+
+// SetOutputToStdOut
+// out to os.StdOut
+func SetOutputToStdOut() {
+	logToStdout = true
+	logger.SetOutput(os.Stdout)
+}
+
+// SetOutputToMW , Multi Writer
+// out to os.StdOut and File
+func SetOutputToMW(path, filenamePrefix string, useDateSuffix bool) {
+	logToStdout = true
+
+	logPath = path
+	logFileNamePrefix = filenamePrefix
+	logFileNameDateSuffix = useDateSuffix
+
+	// upload path
+	err := os.MkdirAll(logPath, 0755)
+	if err != nil {
+		fmt.Printf("Logger Create log Path %s\r\n", err.Error())
+	}
+	// go routine close file timer
+	if !isLogfileOpen() {
+		logFileOpen()
+		// go logFileCloseTimer()
+	}
 }
 
 // AddFields appends fields to the log entry using custom logger.Fields
@@ -94,7 +170,7 @@ func DisableColor() {
 // Debugf logs a message at level Debug on the standard logger.
 func Debugf(format string, args ...interface{}) {
 	logger := logger.WithFields(logrus.Fields{
-		"environment": os.Getenv("APP_ENV"),
+		"environment": appenv,
 	})
 
 	logger.Debugf(format, args...)
@@ -103,7 +179,7 @@ func Debugf(format string, args ...interface{}) {
 // Infof logs a message at level Info on the standard logger.
 func Infof(format string, args ...interface{}) {
 	logger := logger.WithFields(logrus.Fields{
-		"environment": os.Getenv("APP_ENV"),
+		"environment": appenv,
 	})
 
 	logger.Infof(format, args...)
@@ -112,7 +188,7 @@ func Infof(format string, args ...interface{}) {
 // Printf logs a message at level Info on the standard logger.
 func Printf(format string, args ...interface{}) {
 	logger := logger.WithFields(logrus.Fields{
-		"environment": os.Getenv("APP_ENV"),
+		"environment": appenv,
 	})
 
 	logger.Printf(format, args...)
@@ -121,7 +197,7 @@ func Printf(format string, args ...interface{}) {
 // Warnf logs a message at level Warn on the standard logger.
 func Warnf(format string, args ...interface{}) {
 	logger := logger.WithFields(logrus.Fields{
-		"environment": os.Getenv("APP_ENV"),
+		"environment": appenv,
 	})
 
 	logger.Warnf(format, args...)
@@ -130,7 +206,7 @@ func Warnf(format string, args ...interface{}) {
 // Warningf logs a message at level Warn on the standard logger.
 func Warningf(format string, args ...interface{}) {
 	logger := logger.WithFields(logrus.Fields{
-		"environment": os.Getenv("APP_ENV"),
+		"environment": appenv,
 	})
 
 	logger.Warningf(format, args...)
@@ -139,7 +215,7 @@ func Warningf(format string, args ...interface{}) {
 // Errorf logs a message at level Error on the standard logger.
 func Errorf(format string, args ...interface{}) {
 	logger := logger.WithFields(logrus.Fields{
-		"environment": os.Getenv("APP_ENV"),
+		"environment": appenv,
 	})
 
 	logger.Errorf(format, args...)
@@ -149,7 +225,7 @@ func Errorf(format string, args ...interface{}) {
 // it do defer os.Exit(1) after print log
 func Fatalf(format string, args ...interface{}) {
 	logger := logger.WithFields(logrus.Fields{
-		"environment": os.Getenv("APP_ENV"),
+		"environment": appenv,
 	})
 
 	logger.Fatalf(format, args...)
@@ -159,7 +235,7 @@ func Fatalf(format string, args ...interface{}) {
 // it do panic() after print log
 func Panicf(format string, args ...interface{}) {
 	logger := logger.WithFields(logrus.Fields{
-		"environment": os.Getenv("APP_ENV"),
+		"environment": appenv,
 	})
 
 	logger.Panicf(format, args...)
@@ -168,7 +244,7 @@ func Panicf(format string, args ...interface{}) {
 // Debug logs a message at level Debug on the standard logger.
 func Debug(args ...interface{}) {
 	logger := logger.WithFields(logrus.Fields{
-		"environment": os.Getenv("APP_ENV"),
+		"environment": appenv,
 	})
 
 	logger.Debug(args...)
@@ -183,7 +259,7 @@ func Debug(args ...interface{}) {
 //	}
 func Info(args ...interface{}) {
 	logger := logger.WithFields(logrus.Fields{
-		"environment": os.Getenv("APP_ENV"),
+		"environment": appenv,
 	})
 
 	logger.Info(args...)
@@ -192,7 +268,7 @@ func Info(args ...interface{}) {
 // Print logs a message at level Info on the standard logger.
 func Print(args ...interface{}) {
 	logger := logger.WithFields(logrus.Fields{
-		"environment": os.Getenv("APP_ENV"),
+		"environment": appenv,
 	})
 
 	logger.Print(args...)
@@ -201,7 +277,7 @@ func Print(args ...interface{}) {
 // Warn logs a message at level Warn on the standard logger.
 func Warn(args ...interface{}) {
 	logger := logger.WithFields(logrus.Fields{
-		"environment": os.Getenv("APP_ENV"),
+		"environment": appenv,
 	})
 
 	logger.Warn(args...)
@@ -210,7 +286,7 @@ func Warn(args ...interface{}) {
 // Warning logs a message at level Warn on the standard logger.
 func Warning(args ...interface{}) {
 	logger := logger.WithFields(logrus.Fields{
-		"environment": os.Getenv("APP_ENV"),
+		"environment": appenv,
 	})
 
 	logger.Warning(args...)
@@ -219,7 +295,7 @@ func Warning(args ...interface{}) {
 // Error logs a message at level Error on the standard logger.
 func Error(args ...interface{}) {
 	logger := logger.WithFields(logrus.Fields{
-		"environment": os.Getenv("APP_ENV"),
+		"environment": appenv,
 	})
 
 	logger.Error(args...)
@@ -228,7 +304,7 @@ func Error(args ...interface{}) {
 // Fatal logs a message at level Fatal on the standard logger then the process will exit with status set to 1.
 func Fatal(args ...interface{}) {
 	logger := logger.WithFields(logrus.Fields{
-		"environment": os.Getenv("APP_ENV"),
+		"environment": appenv,
 	})
 
 	logger.Fatal(args...)
@@ -237,7 +313,7 @@ func Fatal(args ...interface{}) {
 // Panic logs a message at level Panic on the standard logger.
 func Panic(args ...interface{}) {
 	logger := logger.WithFields(logrus.Fields{
-		"environment": os.Getenv("APP_ENV"),
+		"environment": appenv,
 	})
 
 	logger.Panic(args...)
@@ -246,7 +322,7 @@ func Panic(args ...interface{}) {
 // Debugln logs a message at level Debug on the standard logger.
 func Debugln(args ...interface{}) {
 	logger := logger.WithFields(logrus.Fields{
-		"environment": os.Getenv("APP_ENV"),
+		"environment": appenv,
 	})
 
 	logger.Debugln(args...)
@@ -255,7 +331,7 @@ func Debugln(args ...interface{}) {
 // Infoln logs a message at level Info on the standard logger.
 func Infoln(args ...interface{}) {
 	logger := logger.WithFields(logrus.Fields{
-		"environment": os.Getenv("APP_ENV"),
+		"environment": appenv,
 	})
 
 	logger.Infoln(args...)
@@ -264,7 +340,7 @@ func Infoln(args ...interface{}) {
 // Println logs a message at level Info on the standard logger.
 func Println(args ...interface{}) {
 	logger := logger.WithFields(logrus.Fields{
-		"environment": os.Getenv("APP_ENV"),
+		"environment": appenv,
 	})
 
 	logger.Println(args...)
@@ -273,7 +349,7 @@ func Println(args ...interface{}) {
 // Warnln logs a message at level Warn on the standard logger.
 func Warnln(args ...interface{}) {
 	logger := logger.WithFields(logrus.Fields{
-		"environment": os.Getenv("APP_ENV"),
+		"environment": appenv,
 	})
 
 	logger.Warnln(args...)
@@ -282,7 +358,7 @@ func Warnln(args ...interface{}) {
 // Warningln logs a message at level Warn on the standard logger.
 func Warningln(args ...interface{}) {
 	logger := logger.WithFields(logrus.Fields{
-		"environment": os.Getenv("APP_ENV"),
+		"environment": appenv,
 	})
 
 	logger.Warning(args...)
@@ -291,7 +367,7 @@ func Warningln(args ...interface{}) {
 // Errorln logs a message at level Error on the standard logger.
 func Errorln(args ...interface{}) {
 	logger := logger.WithFields(logrus.Fields{
-		"environment": os.Getenv("APP_ENV"),
+		"environment": appenv,
 	})
 
 	logger.Errorln(args...)
@@ -300,7 +376,7 @@ func Errorln(args ...interface{}) {
 // Fatalln logs a message at level Fatal on the standard logger then the process will exit with status set to 1.
 func Fatalln(args ...interface{}) {
 	logger := logger.WithFields(logrus.Fields{
-		"environment": os.Getenv("APP_ENV"),
+		"environment": appenv,
 	})
 
 	logger.Fatalln(args...)
@@ -309,7 +385,7 @@ func Fatalln(args ...interface{}) {
 // Panicln logs a message at level Panic on the standard logger.
 func Panicln(args ...interface{}) {
 	logger := logger.WithFields(logrus.Fields{
-		"environment": os.Getenv("APP_ENV"),
+		"environment": appenv,
 	})
 
 	logger.Panicln(args...)
@@ -317,7 +393,7 @@ func Panicln(args ...interface{}) {
 
 // WithFields log with your specific field
 func WithFields(f Fields) *Entry {
-	f["environment"] = os.Getenv("APP_ENV")
+	f["environment"] = appenv
 
 	return &Entry{logger.WithFields(logrus.Fields(f))}
 }

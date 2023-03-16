@@ -21,7 +21,7 @@ func ListenSignal(s Shutdown) error {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 
-	fmt.Println("[ListenSignal]: listen for the signal of os.Interrupt and syscall.SIGTERM")
+	fmt.Println("[graceful.ListenSignal]: listen for the signal of os.Interrupt and syscall.SIGTERM")
 
 	<-quit
 
